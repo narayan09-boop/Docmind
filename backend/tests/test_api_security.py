@@ -95,3 +95,15 @@ async def test_documents_endpoint(async_client):
     assert res.status_code == 200
     assert isinstance(res.json(), list)
 
+@pytest.mark.asyncio
+async def test_cors_preflight_options(async_client):
+    headers = {
+        "Origin": "http://localhost:3001",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "X-Tenant-ID, Content-Type"
+    }
+    res = await async_client.options("/api/v1/stats", headers=headers)
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:3001"
+
+

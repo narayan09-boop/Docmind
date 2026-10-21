@@ -25,7 +25,14 @@ class Settings(BaseSettings):
     # Security & Access Control
     API_KEY: Optional[str] = Field(default=None, description="Optional master API key for authenticating endpoints")
     ALLOWED_ORIGINS: List[str] = Field(
-        default=["http://localhost:3000", "http://127.0.0.1:3000"],
+        default=[
+            "http://localhost:3000", 
+            "http://127.0.0.1:3000",
+            "http://localhost:3001", 
+            "http://127.0.0.1:3001",
+            "http://localhost:3002", 
+            "http://127.0.0.1:3002"
+        ],
         description="Allowed CORS origins"
     )
     MAX_UPLOAD_SIZE_BYTES: int = Field(default=15 * 1024 * 1024, description="Max PDF upload size (15MB default)")
