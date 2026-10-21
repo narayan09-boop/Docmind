@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   FileText, Upload, Sparkles, Database, CheckCircle2, 
   BarChart3, RefreshCw, Send, ShieldAlert, Cpu, Layers, Bookmark,
@@ -12,27 +12,33 @@ import { api, SystemStats, BenchmarkSummary, Citation, IngestionResponse } from 
 
 type ActiveTab = "observatory" | "ingestion" | "retrieval" | "generation" | "evaluation" | "configuration";
 
+interface ActivityEvent {
+  id: string;
+  type: "info" | "success" | "warn";
+  message: string;
+  timestamp: string;
+}
+
 export default function DocMindResearchPlatform() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("observatory");
   const [tenantId, setTenantId] = useState<string>("default");
   
   // Real System State
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
+  const [systemConfig, setSystemConfig] = useState<Record<string, any> | null>(null);
   const [isLive, setIsLive] = useState<boolean | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(true);
+  const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([]);
 
   // Ingestion State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isIngesting, setIsIngesting] = useState<boolean>(false);
   const [ingestResult, setIngestResult] = useState<IngestionResponse | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
-  const [documentsHistory, setDocumentsHistory] = useState<Array<{ name: string; chunks: number; time: string; hash: string }>>([
-    { name: "Q3_Financial_Analysis_Report.pdf", chunks: 14, time: "Today 14:22", hash: "9a2f1b408e..." },
-    { name: "DeepSeek_V3_Architecture.pdf", chunks: 22, time: "Yesterday", hash: "4c7d8e912a..." }
-  ]);
+  const [documentsHistory, setDocumentsHistory] = useState<Array<{ filename: string; doc_hash: string; chunk_count: number; created_at: number }>>([]);
 
   // Retrieval Playground State
-  const [retrievalQuery, setRetrievalQuery] = useState<string>("Cloud Infrastructure operating margin and revenue growth");
+  const [retrievalQuery, setRetrievalQuery] = useState<string>("");
   const [topK, setTopK] = useState<number>(5);
   const [rerankTopK, setRerankTopK] = useState<number>(3);
   const [retrievedCitations, setRetrievedCitations] = useState<Citation[]>([]);
@@ -41,7 +47,7 @@ export default function DocMindResearchPlatform() {
   const [retrievalError, setRetrievalError] = useState<string | null>(null);
 
   // Generation Playground State
-  const [generationQuery, setGenerationQuery] = useState<string>("What was the operating margin achieved by Cloud Infrastructure in Q3?");
+  const [generationQuery, setGenerationQuery] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationAnswer, setGenerationAnswer] = useState<string | null>(null);
   const [generationCitations, setGenerationCitations] = useState<Citation[]>([]);
@@ -54,30 +60,51 @@ export default function DocMindResearchPlatform() {
   const [isBenchmarking, setIsBenchmarking] = useState<boolean>(false);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
 
-  // Copied state indicator
+  // Copied indicator
   const [copied, setCopied] = useState<boolean>(false);
 
-  // Fetch initial telemetry
+  // Helper to log dynamic events
+  const addEvent = (message: string, type: "info" | "success" | "warn" = "info") => {
+    const timeStr = new Date().toLocaleTimeString();
+    setActivityEvents(prev => [
+      { id: `${Date.now()}-${Math.random()}`, type, message, timestamp: timeStr },
+      ...prev.slice(0, 19)
+    ]);
+  };
+
+  // Fetch real data on mount & tenant switch
   useEffect(() => {
-    fetchTelemetry();
+    fetchInitialData();
   }, [tenantId]);
 
-  const fetchTelemetry = async () => {
+  const fetchInitialData = async () => {
     setStatsLoading(true);
     try {
-      const [healthRes, statsRes] = await Promise.allSettled([
+      const [healthRes, statsRes, docsRes, configRes] = await Promise.allSettled([
         api.getHealth(),
-        api.getStats(tenantId)
+        api.getStats(tenantId),
+        api.getDocuments(tenantId),
+        api.getConfig(tenantId)
       ]);
 
       if (healthRes.status === "fulfilled") {
         setIsLive(true);
+        addEvent(`Connected to FastAPI backend (${healthRes.value.service})`, "success");
       } else {
         setIsLive(false);
+        addEvent("Backend connection offline at http://localhost:8000", "warn");
       }
 
       if (statsRes.status === "fulfilled") {
         setSystemStats(statsRes.value);
+      }
+
+      if (docsRes.status === "fulfilled") {
+        setDocumentsHistory(docsRes.value);
+      }
+
+      if (configRes.status === "fulfilled") {
+        setSystemConfig(configRes.value);
       }
     } catch {
       setIsLive(false);
@@ -98,13 +125,18 @@ export default function DocMindResearchPlatform() {
     try {
       const res = await api.ingestDocument(file, tenantId);
       setIngestResult(res);
-      setDocumentsHistory(prev => [
-        { name: res.filename, chunks: res.new_chunks_indexed, time: "Just now", hash: res.doc_hash },
-        ...prev
+      addEvent(`Document '${res.filename}' parsed and indexed (${res.new_chunks_indexed} chunks, ${res.indexing_latency_ms}ms)`, "success");
+      
+      // Refresh documents and stats from backend
+      const [docs, stats] = await Promise.all([
+        api.getDocuments(tenantId),
+        api.getStats(tenantId)
       ]);
-      fetchTelemetry();
+      setDocumentsHistory(docs);
+      setSystemStats(stats);
     } catch (err: any) {
       setIngestError(err.message || "Failed to parse document");
+      addEvent(`Ingestion failure for '${file.name}': ${err.message}`, "warn");
     } finally {
       setIsIngesting(false);
     }
@@ -120,9 +152,11 @@ export default function DocMindResearchPlatform() {
       const res = await api.query(retrievalQuery, topK, rerankTopK, tenantId);
       setRetrievedCitations(res.citations);
       setRetrievalLatency(res.latency_ms);
+      addEvent(`Retrieval query executed (${res.citations.length} candidates in ${res.latency_ms}ms)`, "info");
     } catch (err: any) {
       setRetrievalError(err.message || "Retrieval request failed");
       setRetrievedCitations([]);
+      addEvent(`Retrieval error: ${err.message}`, "warn");
     } finally {
       setIsRetrieving(false);
     }
@@ -141,8 +175,10 @@ export default function DocMindResearchPlatform() {
       setGenerationCitations(res.citations);
       setGenerationLatency(res.latency_ms);
       setIsCachedHit(res.is_cached);
+      addEvent(`Inference completed in ${res.latency_ms}ms (cache hit: ${res.is_cached})`, "info");
     } catch (err: any) {
       setGenerationError(err.message || "Inference request failed");
+      addEvent(`Inference error: ${err.message}`, "warn");
     } finally {
       setIsGenerating(false);
     }
@@ -157,8 +193,10 @@ export default function DocMindResearchPlatform() {
     try {
       const res = await api.runBenchmark(tenantId);
       setBenchmarkData(res);
+      addEvent(`Evaluation benchmark completed: Hit Rate@3 = ${(res.hit_rate_at_3 * 100).toFixed(1)}%, MRR = ${res.mrr.toFixed(4)}`, "success");
     } catch (err: any) {
       setBenchmarkError(err.message || "Benchmark failed to complete on server");
+      addEvent(`Benchmark error: ${err.message}`, "warn");
     } finally {
       setIsBenchmarking(false);
     }
@@ -181,7 +219,7 @@ export default function DocMindResearchPlatform() {
               <span className="font-pixel text-[9px] text-terracotta bg-terracotta/10 px-1.5 py-0.5 border border-terracotta/20">
                 LAB / 01
               </span>
-              <span className="font-mono text-[11px] text-muted tracking-tight">v1.1.0-prod</span>
+              <span className="font-mono text-[11px] text-muted tracking-tight">v1.1.0</span>
             </div>
             <h1 className="font-serif text-2xl font-bold tracking-tight text-espresso leading-none">
               DocMind
@@ -319,7 +357,7 @@ export default function DocMindResearchPlatform() {
             </span>
             <span className="text-muted/40 font-mono text-xs">/</span>
             <span className="font-mono text-xs text-muted">
-              {activeTab === "evaluation" ? "BENCHMARK_SUITE_v1" : "INSPECT_MODE"}
+              {activeTab === "evaluation" ? "BENCHMARK_SUITE_v1" : "LIVE_TELEMETRY"}
             </span>
           </div>
 
@@ -331,7 +369,7 @@ export default function DocMindResearchPlatform() {
               <span className="font-semibold text-terracotta">{systemStats?.indexed_chunks ?? 0}</span>
             </div>
             <button 
-              onClick={fetchTelemetry}
+              onClick={fetchInitialData}
               className="p-1.5 border border-taupe hover:bg-sand/60 rounded-sm text-muted hover:text-espresso transition-colors"
               title="Refresh telemetry"
             >
@@ -352,7 +390,7 @@ export default function DocMindResearchPlatform() {
                   System Observatory
                 </h2>
                 <p className="text-xs text-muted font-serif italic mt-0.5">
-                  Real-time pipeline diagnostics, model registry parameters, and data partition health.
+                  Live backend diagnostics, model registry parameters, and data partition telemetry.
                 </p>
               </div>
 
@@ -367,19 +405,21 @@ export default function DocMindResearchPlatform() {
                 </div>
 
                 <div className="paper-surface p-4">
-                  <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Dense Vectors</span>
-                  <div className="font-serif text-3xl font-bold text-terracotta mt-1">
-                    384<span className="text-xs font-mono font-normal text-muted"> dim</span>
+                  <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Embedding Model</span>
+                  <div className="font-serif text-xl font-bold text-terracotta mt-1 truncate" title={systemStats?.embedding_model}>
+                    {systemStats?.embedding_model || "Loading..."}
                   </div>
-                  <span className="text-[11px] text-muted font-serif italic mt-1 block">all-MiniLM-L6-v2</span>
+                  <span className="text-[11px] text-muted font-serif italic mt-1 block">
+                    {systemConfig?.EMBEDDING_DIMENSION ? `${systemConfig.EMBEDDING_DIMENSION} dimensions` : "SentenceTransformers"}
+                  </span>
                 </div>
 
                 <div className="paper-surface p-4">
-                  <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Reranker Precision</span>
-                  <div className="font-serif text-3xl font-bold text-sage-dark mt-1">
-                    CrossEnc
+                  <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Reranker Model</span>
+                  <div className="font-serif text-xl font-bold text-sage-dark mt-1 truncate" title={systemStats?.reranker_model}>
+                    {systemStats?.reranker_model || "Loading..."}
                   </div>
-                  <span className="text-[11px] text-muted font-serif italic mt-1 block">ms-marco-MiniLM-L-6-v2</span>
+                  <span className="text-[11px] text-muted font-serif italic mt-1 block">CrossEncoder verification</span>
                 </div>
 
                 <div className="paper-surface p-4">
@@ -387,7 +427,9 @@ export default function DocMindResearchPlatform() {
                   <div className="font-serif text-3xl font-bold text-forest mt-1">
                     {systemStats?.cached_queries ?? 0}
                   </div>
-                  <span className="text-[11px] text-muted font-serif italic mt-1 block">Threshold &ge; 0.90 sim</span>
+                  <span className="text-[11px] text-muted font-serif italic mt-1 block">
+                    {systemConfig ? `Threshold \u2265 ${systemConfig.SEMANTIC_CACHE_THRESHOLD} sim` : "Active partition"}
+                  </span>
                 </div>
               </div>
 
@@ -398,7 +440,7 @@ export default function DocMindResearchPlatform() {
                     Verified Pipeline Stages
                   </h3>
                   <span className="font-pixel text-[8px] text-forest bg-forest/10 px-2 py-0.5 border border-forest/20">
-                    OPERATIONAL
+                    {isLive ? "OPERATIONAL" : "OFFLINE"}
                   </span>
                 </div>
 
@@ -416,7 +458,7 @@ export default function DocMindResearchPlatform() {
                       02. Hybrid Search & RRF
                     </h4>
                     <p className="text-muted">
-                      Combines 384-dim dense embeddings with BM25Okapi inverted index using Reciprocal Rank Fusion (smoothing constant <code>k=60</code>), eliminating scale divergence between sparse and dense scores.
+                      Combines dense embeddings with BM25Okapi inverted index using Reciprocal Rank Fusion (smoothing constant <code>k=60</code>), eliminating scale divergence between sparse and dense scores.
                     </p>
                   </div>
                   <div>
@@ -430,35 +472,33 @@ export default function DocMindResearchPlatform() {
                 </div>
               </div>
 
-              {/* Activity Timeline */}
+              {/* Dynamic Activity Timeline */}
               <div className="paper-surface p-5 space-y-3">
                 <div className="flex items-center justify-between hairline-b pb-2">
-                  <span className="font-serif text-sm font-semibold text-espresso">Recent Pipeline Events</span>
-                  <span className="font-mono text-[10px] text-muted">LOG_BUFFER: 5 EVENTS</span>
+                  <span className="font-serif text-sm font-semibold text-espresso">System Event Journal</span>
+                  <span className="font-mono text-[10px] text-muted">
+                    {activityEvents.length} RECORDED EVENTS
+                  </span>
                 </div>
-                <div className="space-y-2 text-xs font-mono">
-                  <div className="flex items-center justify-between py-1.5 hairline-b border-taupe/40 text-muted">
-                    <span className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-forest" />
-                      <span>Ingestion pipeline initialized with PDF magic byte verification (%PDF-)</span>
-                    </span>
-                    <span>14:02 UTC</span>
+                {activityEvents.length === 0 ? (
+                  <p className="text-xs font-serif italic text-muted py-2">
+                    Awaiting pipeline events. Perform an ingestion, search, or evaluation to log activity.
+                  </p>
+                ) : (
+                  <div className="space-y-2 text-xs font-mono">
+                    {activityEvents.map((evt) => (
+                      <div key={evt.id} className="flex items-center justify-between py-1.5 hairline-b border-taupe/40 text-muted">
+                        <span className="flex items-center gap-2">
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            evt.type === "success" ? "bg-forest" : evt.type === "warn" ? "bg-ochre" : "bg-terracotta"
+                          }`} />
+                          <span className="text-espresso">{evt.message}</span>
+                        </span>
+                        <span>{evt.timestamp}</span>
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex items-center justify-between py-1.5 hairline-b border-taupe/40 text-muted">
-                    <span className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-forest" />
-                      <span>Hybrid vector space indexed for tenant 'default'</span>
-                    </span>
-                    <span>14:15 UTC</span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5 text-muted">
-                    <span className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-ochre" />
-                      <span>Evaluation harness benchmark executed: Hit Rate@3 = 100%</span>
-                    </span>
-                    <span>14:28 UTC</span>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           )}
@@ -499,14 +539,14 @@ export default function DocMindResearchPlatform() {
                 </div>
               </div>
 
-              {/* Drag and Drop Upload Card */}
+              {/* Upload Card */}
               <div className="paper-surface p-8 text-center border-dashed border-2 border-taupe-dark/60 hover:border-terracotta transition-colors">
                 <FileText className="w-8 h-8 text-terracotta mx-auto mb-2 opacity-80" />
                 <h3 className="font-serif text-base font-bold text-espresso">
-                  Select or drop a research paper, 10-Q, or financial PDF
+                  Select a research paper, Form 10-Q, or financial PDF
                 </h3>
                 <p className="text-xs text-muted mt-1 font-serif italic">
-                  Maximum file size: 15 MB. Validated against PDF magic bytes (%PDF-1.4+).
+                  Maximum file size: {systemConfig ? `${(systemConfig.MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)).toFixed(0)} MB` : "15 MB"}. Enforces %PDF magic byte signature.
                 </p>
                 <div className="mt-4">
                   <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 bg-espresso hover:bg-espresso-dark text-paper text-xs font-mono font-medium rounded-sm transition-colors shadow-sm">
@@ -563,7 +603,7 @@ export default function DocMindResearchPlatform() {
                 </div>
               )}
 
-              {/* Document Registry Table */}
+              {/* Document Registry Table (Real Backend Documents) */}
               <div className="paper-surface overflow-hidden">
                 <div className="p-3 hairline-b bg-sand/40 flex items-center justify-between">
                   <span className="font-serif text-xs font-bold text-espresso uppercase tracking-wider">
@@ -571,35 +611,41 @@ export default function DocMindResearchPlatform() {
                   </span>
                   <span className="font-mono text-[10px] text-muted">TOTAL: {documentsHistory.length}</span>
                 </div>
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-sand/30 font-mono text-[10px] text-muted uppercase hairline-b">
-                    <tr>
-                      <th className="p-3">File Name</th>
-                      <th className="p-3">Content Hash</th>
-                      <th className="p-3">Chunks</th>
-                      <th className="p-3">Status</th>
-                      <th className="p-3">Timestamp</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-taupe/40 font-mono text-xs">
-                    {documentsHistory.map((d, i) => (
-                      <tr key={i} className="hover:bg-sand/20">
-                        <td className="p-3 font-medium text-espresso flex items-center gap-2">
-                          <FileText className="w-3.5 h-3.5 text-terracotta" />
-                          <span>{d.name}</span>
-                        </td>
-                        <td className="p-3 text-muted">{d.hash}</td>
-                        <td className="p-3 text-espresso font-semibold">{d.chunks}</td>
-                        <td className="p-3">
-                          <span className="px-1.5 py-0.5 rounded-sm bg-forest/10 text-forest border border-forest/20 text-[10px]">
-                            INDEXED
-                          </span>
-                        </td>
-                        <td className="p-3 text-muted">{d.time}</td>
+                {documentsHistory.length === 0 ? (
+                  <div className="p-8 text-center text-xs font-serif italic text-muted">
+                    No documents indexed for tenant '{tenantId}' yet. Upload a PDF file above to begin ingestion.
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-sand/30 font-mono text-[10px] text-muted uppercase hairline-b">
+                      <tr>
+                        <th className="p-3">File Name</th>
+                        <th className="p-3">Content Hash</th>
+                        <th className="p-3">Chunks</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3">Created</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-taupe/40 font-mono text-xs">
+                      {documentsHistory.map((d, i) => (
+                        <tr key={i} className="hover:bg-sand/20">
+                          <td className="p-3 font-medium text-espresso flex items-center gap-2">
+                            <FileText className="w-3.5 h-3.5 text-terracotta" />
+                            <span>{d.filename}</span>
+                          </td>
+                          <td className="p-3 text-muted">{d.doc_hash}</td>
+                          <td className="p-3 text-espresso font-semibold">{d.chunk_count}</td>
+                          <td className="p-3">
+                            <span className="px-1.5 py-0.5 rounded-sm bg-forest/10 text-forest border border-forest/20 text-[10px]">
+                              INDEXED
+                            </span>
+                          </td>
+                          <td className="p-3 text-muted">{new Date(d.created_at * 1000).toLocaleTimeString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           )}
@@ -629,7 +675,7 @@ export default function DocMindResearchPlatform() {
                       type="text" 
                       value={retrievalQuery}
                       onChange={(e) => setRetrievalQuery(e.target.value)}
-                      placeholder="Enter search expression or question..."
+                      placeholder="Enter search expression or question to retrieve evidence..."
                       className="flex-1 bg-surface border border-taupe px-3 py-2 text-xs font-mono text-espresso focus:outline-none focus:border-terracotta"
                     />
                     <button
@@ -668,8 +714,8 @@ export default function DocMindResearchPlatform() {
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-muted block mb-1 uppercase">RRF Smoothing Constant</label>
-                    <span className="font-semibold text-espresso">k = 60 (Standard Cormack)</span>
+                    <label className="text-[10px] text-muted block mb-1 uppercase">RRF Fusion Constant</label>
+                    <span className="font-semibold text-espresso">k = {systemConfig?.RRF_K ?? 60}</span>
                   </div>
                 </div>
               </div>
@@ -693,7 +739,7 @@ export default function DocMindResearchPlatform() {
               <div className="space-y-3">
                 {retrievedCitations.length === 0 && !isRetrieving ? (
                   <div className="paper-panel p-8 text-center text-xs font-serif italic text-muted">
-                    No active retrieval results. Execute a query to inspect ranked evidence chunks.
+                    No active retrieval results. Enter a query above to inspect ranked evidence chunks from indexed documents.
                   </div>
                 ) : (
                   retrievedCitations.map((c) => (
@@ -753,7 +799,7 @@ export default function DocMindResearchPlatform() {
                     type="text"
                     value={generationQuery}
                     onChange={(e) => setGenerationQuery(e.target.value)}
-                    placeholder="Ask a factual question based on uploaded documents..."
+                    placeholder="Ask a question based on indexed documents..."
                     className="flex-1 bg-surface border border-taupe px-3 py-2 text-xs font-mono text-espresso focus:outline-none focus:border-terracotta"
                   />
                   <button
@@ -774,11 +820,19 @@ export default function DocMindResearchPlatform() {
                     <span>Latency: <strong className="text-espresso">{generationLatency} ms</strong></span>
                     {isCachedHit && (
                       <span className="px-1.5 py-0.5 bg-forest/10 text-forest border border-forest/20 text-[10px]">
-                        ⚡ SEMANTIC CACHE HIT (&ge; 0.90 SIM)
+                        ⚡ SEMANTIC CACHE HIT (&ge; {systemConfig?.SEMANTIC_CACHE_THRESHOLD ?? 0.90} SIM)
                       </span>
                     )}
                   </div>
                   <span className="font-pixel text-[8px] text-muted">PROMPT_FENCED: XML</span>
+                </div>
+              )}
+
+              {/* Error Message */}
+              {generationError && (
+                <div className="p-3 bg-brick/10 border border-brick/30 text-brick text-xs font-mono flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{generationError}</span>
                 </div>
               )}
 
@@ -855,16 +909,22 @@ export default function DocMindResearchPlatform() {
               {/* Dataset Specification Card */}
               <div className="paper-panel p-4 flex items-center justify-between text-xs font-mono">
                 <div>
-                  <span className="text-muted block text-[10px] uppercase">ACTIVE TEST BENCHMARK</span>
-                  <span className="font-semibold text-espresso">DocMind Financial & Technical Benchmark</span>
+                  <span className="text-muted block text-[10px] uppercase">BENCHMARK DATASET</span>
+                  <span className="font-semibold text-espresso">
+                    {benchmarkData?.dataset_name || "DocMind Benchmark Suite"}
+                  </span>
                 </div>
                 <div>
-                  <span className="text-muted block text-[10px] uppercase">SPEC VERSION</span>
-                  <span className="font-semibold text-espresso">v1.0.0</span>
+                  <span className="text-muted block text-[10px] uppercase">VERSION</span>
+                  <span className="font-semibold text-espresso">
+                    {benchmarkData?.dataset_version || "v1.0.0"}
+                  </span>
                 </div>
                 <div>
                   <span className="text-muted block text-[10px] uppercase">TEST EXAMPLES</span>
-                  <span className="font-semibold text-terracotta">5 Verified Cases</span>
+                  <span className="font-semibold text-terracotta">
+                    {benchmarkData ? `${benchmarkData.total_examples} Cases` : "5 Cases"}
+                  </span>
                 </div>
                 <div>
                   <span className="text-muted block text-[10px] uppercase">HARNESS ENGINE</span>
@@ -879,12 +939,12 @@ export default function DocMindResearchPlatform() {
                 </div>
               )}
 
-              {/* Live Metric Cards Grid */}
+              {/* Metric Cards Grid */}
               <div className="grid grid-cols-4 gap-4">
                 <div className="paper-surface p-4">
                   <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Hit Rate @ 3</span>
                   <div className="font-serif text-3xl font-bold text-forest mt-1">
-                    {benchmarkData ? `${(benchmarkData.hit_rate_at_3 * 100).toFixed(1)}%` : "100.0%"}
+                    {benchmarkData ? `${(benchmarkData.hit_rate_at_3 * 100).toFixed(1)}%` : "\u2014"}
                   </div>
                   <span className="text-[10px] text-muted font-mono mt-1 block">Expected doc in top 3</span>
                 </div>
@@ -892,7 +952,7 @@ export default function DocMindResearchPlatform() {
                 <div className="paper-surface p-4">
                   <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Mean Recip. Rank</span>
                   <div className="font-serif text-3xl font-bold text-espresso mt-1">
-                    {benchmarkData ? benchmarkData.mrr.toFixed(4) : "1.0000"}
+                    {benchmarkData ? benchmarkData.mrr.toFixed(4) : "\u2014"}
                   </div>
                   <span className="text-[10px] text-muted font-mono mt-1 block">MRR ranking score</span>
                 </div>
@@ -900,7 +960,7 @@ export default function DocMindResearchPlatform() {
                 <div className="paper-surface p-4">
                   <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">Evidence Precision</span>
                   <div className="font-serif text-3xl font-bold text-terracotta mt-1">
-                    {benchmarkData ? `${(benchmarkData.precision_at_3 * 100).toFixed(1)}%` : "41.7%"}
+                    {benchmarkData ? `${(benchmarkData.precision_at_3 * 100).toFixed(1)}%` : "\u2014"}
                   </div>
                   <span className="text-[10px] text-muted font-mono mt-1 block">Keyword overlap in top-k</span>
                 </div>
@@ -908,7 +968,8 @@ export default function DocMindResearchPlatform() {
                 <div className="paper-surface p-4">
                   <span className="font-mono text-[10px] uppercase text-muted tracking-wider block">p50 Latency</span>
                   <div className="font-serif text-3xl font-bold text-sage-dark mt-1">
-                    {benchmarkData ? `${benchmarkData.latency_p50_ms}` : "69.8"}<span className="text-xs font-mono font-normal text-muted"> ms</span>
+                    {benchmarkData ? `${benchmarkData.latency_p50_ms}` : "\u2014"}
+                    {benchmarkData && <span className="text-xs font-mono font-normal text-muted"> ms</span>}
                   </div>
                   <span className="text-[10px] text-muted font-mono mt-1 block">Steady-state retrieval</span>
                 </div>
@@ -921,48 +982,48 @@ export default function DocMindResearchPlatform() {
                     Per-Example Benchmark Breakdown
                   </span>
                   <span className="font-mono text-[10px] text-muted">
-                    {benchmarkData ? `EVALUATED AT: ${new Date(benchmarkData.timestamp * 1000).toLocaleTimeString()}` : "PRE-EVALUATED RUN"}
+                    {benchmarkData ? `EVALUATED AT: ${new Date(benchmarkData.timestamp * 1000).toLocaleTimeString()}` : "STATUS: PENDING EXECUTION"}
                   </span>
                 </div>
 
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-sand/30 font-mono text-[10px] text-muted uppercase hairline-b">
-                    <tr>
-                      <th className="p-3">ID</th>
-                      <th className="p-3">Query Expression</th>
-                      <th className="p-3">Expected Doc</th>
-                      <th className="p-3">Top Retrieved</th>
-                      <th className="p-3">Faithfulness</th>
-                      <th className="p-3">Latency</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-taupe/40 font-mono text-xs">
-                    {(benchmarkData?.example_results || [
-                      { id: "eval-001", query: "What was operating revenue expansion in Q3?", expected_doc: "Q3_Report.pdf", top_doc: "Q3_Report.pdf", faithfulness: 1.0, latency_ms: 72.4 },
-                      { id: "eval-002", query: "What gross margin was achieved by Cloud Infra?", expected_doc: "Q3_Report.pdf", top_doc: "Q3_Report.pdf", faithfulness: 0.84, latency_ms: 69.8 },
-                      { id: "eval-003", query: "How much cost savings from cluster orchestration?", expected_doc: "Q3_Report.pdf", top_doc: "Q3_Report.pdf", faithfulness: 0.82, latency_ms: 81.2 },
-                      { id: "eval-004", query: "What is the projected revenue guidance for FY27?", expected_doc: "Q3_Report.pdf", top_doc: "Q3_Report.pdf", faithfulness: 0.78, latency_ms: 93.9 },
-                      { id: "eval-005", query: "What is quantum encryption protocol in Mars satellite?", expected_doc: "None (Abstain)", top_doc: "Q3_Report.pdf", faithfulness: 0.18, latency_ms: 60.8 }
-                    ]).map((row, i) => (
-                      <tr key={i} className="hover:bg-sand/20">
-                        <td className="p-3 text-terracotta font-semibold">{row.id}</td>
-                        <td className="p-3 font-serif italic text-espresso">{row.query}</td>
-                        <td className="p-3 text-muted">{row.expected_doc || "None (Abstain)"}</td>
-                        <td className="p-3 text-espresso font-semibold">{row.top_doc || "N/A"}</td>
-                        <td className="p-3">
-                          <span className={`px-1.5 py-0.5 rounded-sm text-[10px] ${
-                            row.faithfulness >= 0.7 
-                              ? "bg-forest/10 text-forest border border-forest/20" 
-                              : "bg-ochre/10 text-ochre border border-ochre/20"
-                          }`}>
-                            {(row.faithfulness * 100).toFixed(0)}%
-                          </span>
-                        </td>
-                        <td className="p-3 text-muted">{row.latency_ms} ms</td>
+                {!benchmarkData ? (
+                  <div className="p-8 text-center text-xs font-serif italic text-muted">
+                    No active evaluation run recorded. Click "Run Evaluation Benchmark" above to execute the test suite against the live retrieval engine.
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-sand/30 font-mono text-[10px] text-muted uppercase hairline-b">
+                      <tr>
+                        <th className="p-3">ID</th>
+                        <th className="p-3">Query Expression</th>
+                        <th className="p-3">Expected Doc</th>
+                        <th className="p-3">Top Retrieved</th>
+                        <th className="p-3">Faithfulness</th>
+                        <th className="p-3">Latency</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-taupe/40 font-mono text-xs">
+                      {benchmarkData.example_results.map((row) => (
+                        <tr key={row.id} className="hover:bg-sand/20">
+                          <td className="p-3 text-terracotta font-semibold">{row.id}</td>
+                          <td className="p-3 font-serif italic text-espresso">{row.query}</td>
+                          <td className="p-3 text-muted">{row.expected_doc || "None (Abstain)"}</td>
+                          <td className="p-3 text-espresso font-semibold">{row.top_doc || "N/A"}</td>
+                          <td className="p-3">
+                            <span className={`px-1.5 py-0.5 rounded-sm text-[10px] ${
+                              row.faithfulness >= 0.7 
+                                ? "bg-forest/10 text-forest border border-forest/20" 
+                                : "bg-ochre/10 text-ochre border border-ochre/20"
+                            }`}>
+                              {(row.faithfulness * 100).toFixed(0)}%
+                            </span>
+                          </td>
+                          <td className="p-3 text-muted">{row.latency_ms} ms</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
           )}
@@ -981,43 +1042,57 @@ export default function DocMindResearchPlatform() {
               </div>
 
               <div className="paper-surface p-6 space-y-4">
-                <h3 className="font-serif text-base font-bold text-espresso hairline-b pb-2">
-                  Active Runtime Parameters
-                </h3>
+                <div className="flex items-center justify-between hairline-b pb-2">
+                  <h3 className="font-serif text-base font-bold text-espresso">
+                    Active Runtime Settings (Source: /api/v1/config)
+                  </h3>
+                  <span className="font-mono text-[10px] text-muted">
+                    ENVIRONMENT: <strong className="text-espresso">{systemConfig?.ENVIRONMENT || "development"}</strong>
+                  </span>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4 text-xs font-mono">
                   <div className="p-3 bg-sand/30 border border-taupe">
                     <span className="text-[10px] text-muted uppercase block">EMBEDDING MODEL</span>
-                    <span className="font-semibold text-espresso">{systemStats?.embedding_model || "all-MiniLM-L6-v2"}</span>
-                    <span className="text-[10px] text-muted block mt-0.5">Source: SentenceTransformers</span>
+                    <span className="font-semibold text-espresso">{systemConfig?.EMBEDDING_MODEL_NAME || "all-MiniLM-L6-v2"}</span>
+                    <span className="text-[10px] text-muted block mt-0.5">Provider: {systemConfig?.EMBEDDING_PROVIDER || "sentence-transformers"}</span>
                   </div>
 
                   <div className="p-3 bg-sand/30 border border-taupe">
                     <span className="text-[10px] text-muted uppercase block">RERANKER MODEL</span>
-                    <span className="font-semibold text-espresso">{systemStats?.reranker_model || "cross-encoder/ms-marco-MiniLM-L-6-v2"}</span>
-                    <span className="text-[10px] text-muted block mt-0.5">Type: CrossEncoder</span>
+                    <span className="font-semibold text-espresso">{systemConfig?.RERANKER_MODEL_NAME || "cross-encoder/ms-marco-MiniLM-L-6-v2"}</span>
+                    <span className="text-[10px] text-muted block mt-0.5">Reranking Enabled: {systemConfig?.ENABLE_RERANKER ? "true" : "false"}</span>
                   </div>
 
                   <div className="p-3 bg-sand/30 border border-taupe">
                     <span className="text-[10px] text-muted uppercase block">SEMANTIC CACHE THRESHOLD</span>
-                    <span className="font-semibold text-espresso">&ge; 0.90 Cosine Similarity</span>
-                    <span className="text-[10px] text-muted block mt-0.5">Partition: Scoped per tenant</span>
+                    <span className="font-semibold text-espresso">
+                      &ge; {systemConfig?.SEMANTIC_CACHE_THRESHOLD ?? 0.90} Cosine Similarity
+                    </span>
+                    <span className="text-[10px] text-muted block mt-0.5">TTL: {systemConfig?.SEMANTIC_CACHE_TTL_SECONDS ?? 86400}s</span>
                   </div>
 
                   <div className="p-3 bg-sand/30 border border-taupe">
                     <span className="text-[10px] text-muted uppercase block">RATE LIMIT CEILING</span>
-                    <span className="font-semibold text-espresso">60 requests / minute</span>
+                    <span className="font-semibold text-espresso">
+                      {systemConfig?.RATE_LIMIT_PER_MINUTE ?? 60} requests / minute
+                    </span>
                     <span className="text-[10px] text-muted block mt-0.5">Sliding-window token bucket</span>
                   </div>
 
                   <div className="p-3 bg-sand/30 border border-taupe">
                     <span className="text-[10px] text-muted uppercase block">MAX UPLOAD THRESHOLD</span>
-                    <span className="font-semibold text-espresso">15.00 MB</span>
+                    <span className="font-semibold text-espresso">
+                      {systemConfig ? `${(systemConfig.MAX_UPLOAD_SIZE_BYTES / (1024 * 1024)).toFixed(2)} MB` : "15.00 MB"}
+                    </span>
                     <span className="text-[10px] text-muted block mt-0.5">Enforced at API gateway</span>
                   </div>
 
                   <div className="p-3 bg-sand/30 border border-taupe">
                     <span className="text-[10px] text-muted uppercase block">MAX QUERY LENGTH</span>
-                    <span className="font-semibold text-espresso">1,000 characters</span>
+                    <span className="font-semibold text-espresso">
+                      {systemConfig?.MAX_QUERY_LENGTH ?? 1000} characters
+                    </span>
                     <span className="text-[10px] text-muted block mt-0.5">Pydantic v2 validated</span>
                   </div>
                 </div>

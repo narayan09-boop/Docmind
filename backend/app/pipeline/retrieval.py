@@ -28,7 +28,8 @@ class HybridRetrievalPipeline:
             self._tenant_stores[tenant_id] = {
                 "chunks": [],
                 "embeddings": np.empty((0, model_registry.dimension), dtype=np.float32),
-                "bm25": None
+                "bm25": None,
+                "documents": {}
             }
         return self._tenant_stores[tenant_id]
 
@@ -62,6 +63,18 @@ class HybridRetrievalPipeline:
                 updated_embeddings = new_vectors
             else:
                 updated_embeddings = np.vstack([store["embeddings"], new_vectors])
+
+            # Track documents
+            import time
+            for c in new_chunks:
+                if c.doc_hash not in store["documents"]:
+                    store["documents"][c.doc_hash] = {
+                        "filename": c.filename,
+                        "doc_hash": c.doc_hash[:16],
+                        "chunk_count": 0,
+                        "created_at": time.time()
+                    }
+                store["documents"][c.doc_hash]["chunk_count"] += 1
 
             # Rebuild sparse BM25 index for the tenant
             tokenized_corpus = [c.content.lower().split() for c in updated_chunks]
@@ -160,6 +173,13 @@ class HybridRetrievalPipeline:
         with self._lock:
             store = self._tenant_stores.get(tenant_id)
             return len(store["chunks"]) if store else 0
+
+    def get_documents(self, tenant_id: str = "default") -> List[Dict[str, Any]]:
+        with self._lock:
+            store = self._tenant_stores.get(tenant_id)
+            if not store or "documents" not in store:
+                return []
+            return list(store["documents"].values())
 
     def clear(self, tenant_id: Optional[str] = None):
         with self._lock:

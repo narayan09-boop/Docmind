@@ -140,5 +140,19 @@ export const api = {
       headers: { "X-Tenant-ID": tenantId }
     });
     return handleResponse<BenchmarkSummary>(res);
+  },
+
+  async getConfig(tenantId: string = "default"): Promise<Record<string, any>> {
+    const res = await fetch(`${API_BASE_URL}/api/v1/config`, {
+      headers: { "X-Tenant-ID": tenantId }
+    });
+    return handleResponse<Record<string, any>>(res);
+  },
+
+  async getDocuments(tenantId: string = "default"): Promise<Array<{ filename: string; doc_hash: string; chunk_count: number; created_at: number }>> {
+    const res = await fetch(`${API_BASE_URL}/api/v1/documents`, {
+      headers: { "X-Tenant-ID": tenantId }
+    });
+    return handleResponse<Array<{ filename: string; doc_hash: string; chunk_count: number; created_at: number }>>(res);
   }
 };

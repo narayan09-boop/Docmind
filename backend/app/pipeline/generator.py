@@ -156,4 +156,46 @@ class GroundedGenerationPipeline:
                     except Exception:
                         continue
 
+    async def generate_answer(self, query: str, citations: List[CitationInfo]) -> str:
+        """
+        Synthesizes a complete grounded answer non-streaming, supporting OpenAI or local synthesis.
+        """
+        if not citations:
+            return "Insufficient document context in knowledge base to answer this query."
+
+        if settings.LLM_PROVIDER == "openai" and settings.OPENAI_API_KEY:
+            try:
+                messages = self.build_secure_prompt(query, citations)
+                base_url = settings.OPENAI_BASE_URL or "https://api.openai.com/v1"
+                endpoint = f"{base_url.rstrip('/')}/chat/completions"
+
+                headers = {
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+
+                payload = {
+                    "model": settings.LLM_MODEL,
+                    "messages": messages,
+                    "temperature": settings.LLM_TEMPERATURE,
+                    "max_tokens": settings.LLM_MAX_TOKENS,
+                    "stream": False
+                }
+
+                async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
+                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            except Exception as e:
+                logger.error(f"OpenAI error in generate_answer ({e}). Falling back to local synthesis.")
+
+        # Local deterministic synthesis from citations
+        primary = citations[0]
+        ans = f"Based on verified evidence from **{primary.filename}**, the document states: \"{primary.snippet.strip()}\" [Citation 1, Page {primary.page}]."
+        if len(citations) > 1:
+            sec = citations[1]
+            ans += f"\n\nFurthermore, disclosures on Page {sec.page} specify: \"{sec.snippet.strip()}\" [Citation 2, Page {sec.page}]."
+        return ans
+
 generator_pipe = GroundedGenerationPipeline()

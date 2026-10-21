@@ -110,14 +110,8 @@ async def query_pipeline(
     # 3. Format Citations
     citations_data = [c.model_dump() for c in citations]
 
-    # Synthesize answer
-    if citations:
-        answer_text = (
-            f"Based on evidence from {citations[0].filename}, the document indicates: "
-            f"\"{citations[0].snippet}\" [Citation 1, Page {citations[0].page}]."
-        )
-    else:
-        answer_text = "Insufficient document context in knowledge base to answer this query."
+    # Synthesize answer using generator pipeline (OpenAI or grounded local engine)
+    answer_text = await generator_pipe.generate_answer(payload.query, citations)
 
     elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
 
@@ -181,3 +175,13 @@ async def get_system_stats(tenant_id: str = Depends(verify_auth)):
         "reranker_model": settings.RERANKER_MODEL_NAME,
         "status": "operational"
     }
+
+@router.get("/config")
+async def get_system_config(tenant_id: str = Depends(verify_auth)):
+    """Returns active runtime configuration with sensitive credentials masked."""
+    return settings.get_sanitized_dict()
+
+@router.get("/documents")
+async def get_documents(tenant_id: str = Depends(verify_auth)):
+    """Returns list of all active indexed documents for the authenticated tenant."""
+    return retrieval_pipe.get_documents(tenant_id=tenant_id)

@@ -76,3 +76,22 @@ async def test_api_key_auth_enforcement(async_client, monkeypatch):
     # Correct token -> 200
     auth = await async_client.get("/api/v1/stats", headers={"X-API-Key": "prod-secret-token-xyz"})
     assert auth.status_code == 200
+
+@pytest.mark.asyncio
+async def test_config_endpoint_masks_secrets(async_client, monkeypatch):
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-proj-secret-123456789")
+    monkeypatch.setattr(settings, "API_KEY", "my-secret-admin-key")
+    res = await async_client.get("/api/v1/config", headers={"X-API-Key": "my-secret-admin-key"})
+    assert res.status_code == 200
+    data = res.json()
+    assert "sk-proj-secret" not in str(data)
+    assert "my-secret-admin-key" not in str(data)
+    assert data["OPENAI_API_KEY"] == "******"
+    assert data["API_KEY"] == "******"
+
+@pytest.mark.asyncio
+async def test_documents_endpoint(async_client):
+    res = await async_client.get("/api/v1/documents")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
