@@ -8,18 +8,49 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - ALLOWED_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
       - REDIS_URL=redis://redis:6379/0
+      - EMBEDDING_PROVIDER=sentence-transformers
       - EMBEDDING_MODEL_NAME=all-MiniLM-L6-v2
       - RERANKER_MODEL_NAME=cross-encoder/ms-marco-MiniLM-L-6-v2
+      - ENABLE_RERANKER=true
+      - LLM_PROVIDER=local
+      - RATE_LIMIT_PER_MINUTE=60
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   frontend:
     build:
@@ -30,5 +61,10 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G

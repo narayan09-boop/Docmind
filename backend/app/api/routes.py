@@ -1,32 +1,24 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
 import time
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
-from app.pipeline.ingestion import DocumentIngestionPipeline
-from app.pipeline.retrieval import HybridRetrievalPipeline
-from app.pipeline.generator import GroundedGenerationPipeline
+from app.core.config import settings
+from app.core.security import verify_auth, sanitize_filename
 from app.core.cache import semantic_cache
+from app.pipeline.ingestion import DocumentIngestionPipeline
+from app.pipeline.retrieval import retrieval_pipe
+from app.pipeline.generator import generator_pipe
 from app.eval.benchmark import eval_harness
 
 router = APIRouter()
-
-# Singletons for memory-resident pipeline
 ingestion_pipe = DocumentIngestionPipeline()
-retrieval_pipe = HybridRetrievalPipeline()
-generator_pipe = GroundedGenerationPipeline()
-
-# In-memory document storage for preview
-DOC_CATALOG: Dict[str, Any] = {
-    "uploaded_files": [],
-    "total_chunks": 0
-}
 
 class QueryRequest(BaseModel):
-    query: str
-    top_k: Optional[int] = 5
-    rerank_top_k: Optional[int] = 3
+    query: str = Field(..., min_length=1, max_length=1000, description="User search query")
+    top_k: Optional[int] = Field(default=5, ge=1, le=20)
+    rerank_top_k: Optional[int] = Field(default=3, ge=1, le=10)
 
 class QueryResponse(BaseModel):
     query: str
@@ -35,81 +27,97 @@ class QueryResponse(BaseModel):
     similarity_score: Optional[float] = None
     latency_ms: float
     citations: List[Dict[str, Any]]
+    tenant_id: str
 
-@router.post("/ingest")
-async def ingest_document(file: UploadFile = File(...)):
+@router.post("/ingest", status_code=status.HTTP_201_CREATED)
+async def ingest_document(
+    file: UploadFile = File(...),
+    tenant_id: str = Depends(verify_auth)
+):
     """
-    Parses PDF layout, extracts tables/bounding boxes, runs semantic chunking,
-    and indexes into Hybrid Dense+BM25 vector space.
+    Parses PDF layout, validates magic bytes and file size, performs semantic chunking,
+    and idempotently indexes into tenant-isolated hybrid vector store.
     """
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF documents are supported.")
-    
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported file format. Only PDF documents (.pdf) are accepted."
+        )
+
+    safe_name = sanitize_filename(file.filename)
     start_t = time.perf_counter()
-    file_bytes = await file.read()
-    
-    # 1. Layout Extraction & Bounding Boxes
-    elements = ingestion_pipe.extract_document_elements(file_bytes, file.filename)
-    
-    # 2. Semantic Chunking
-    chunks = ingestion_pipe.semantic_chunking(elements)
-    
-    # 3. Hybrid Indexing
-    retrieval_pipe.index_chunks(chunks)
-    
-    elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
-    
-    DOC_CATALOG["uploaded_files"].append(file.filename)
-    DOC_CATALOG["total_chunks"] += len(chunks)
 
-    return {
-        "status": "success",
-        "filename": file.filename,
-        "elements_extracted": len(elements),
-        "chunks_indexed": len(chunks),
-        "indexing_latency_ms": elapsed_ms,
-        "sample_preview": chunks[:2] if chunks else []
-    }
+    try:
+        file_bytes = await file.read()
+        # Ingestion pipeline validates size, magic bytes, parses elements
+        elements = ingestion_pipe.extract_document_elements(file_bytes, safe_name)
+        doc_hash = ingestion_pipe.compute_hash(file_bytes)
+        
+        # Chunking
+        chunks = ingestion_pipe.semantic_chunking(
+            elements=elements,
+            filename=safe_name,
+            doc_hash=doc_hash,
+            tenant_id=tenant_id
+        )
+
+        # Idempotent Indexing
+        indexed_count = retrieval_pipe.index_chunks(chunks, tenant_id=tenant_id)
+        elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
+
+        return {
+            "status": "success",
+            "filename": safe_name,
+            "doc_hash": doc_hash[:16],
+            "tenant_id": tenant_id,
+            "elements_extracted": len(elements),
+            "chunks_generated": len(chunks),
+            "new_chunks_indexed": indexed_count,
+            "indexing_latency_ms": elapsed_ms
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document processing failed due to an internal error."
+        )
 
 @router.post("/query", response_model=QueryResponse)
-async def query_pipeline(payload: QueryRequest):
+async def query_pipeline(
+    payload: QueryRequest,
+    tenant_id: str = Depends(verify_auth)
+):
     """
-    Standard query with Semantic Caching, Hybrid Retrieval, and Cross-Encoder Reranking.
+    Query execution with semantic cache check, hybrid retrieval, and grounded response.
     """
     start_t = time.perf_counter()
 
-    # 1. Retrieval & Query Vector
-    retrieved_chunks, q_vector = retrieval_pipe.search(
+    # 1. Hybrid Retrieval & Query Embedding
+    citations, q_vector = retrieval_pipe.search(
         query=payload.query,
+        tenant_id=tenant_id,
         top_k=payload.top_k,
         rerank_top_k=payload.rerank_top_k
     )
 
-    # 2. Check Semantic Cache
-    cached_hit = semantic_cache.get(q_vector)
+    # 2. Semantic Cache Check (Tenant-Isolated)
+    cached_hit = semantic_cache.get(q_vector, tenant_id=tenant_id)
     if cached_hit:
         cached_hit["latency_ms"] = round((time.perf_counter() - start_t) * 1000, 2)
         return QueryResponse(**cached_hit)
 
     # 3. Format Citations
-    citations = [
-        {
-            "citation_id": i + 1,
-            "filename": c.get("filename"),
-            "page": c.get("primary_page"),
-            "bboxes": c.get("bboxes", []),
-            "snippet": c.get("content")[:180] + "...",
-            "rerank_score": round(c.get("rerank_score", 0.0), 3)
-        }
-        for i, c in enumerate(retrieved_chunks)
-    ]
+    citations_data = [c.model_dump() for c in citations]
 
     # Synthesize answer
-    answer_text = (
-        f"Grounded synthesis: Document evidence from {citations[0]['filename']} indicates that "
-        f"{retrieved_chunks[0]['content'][:140]}... [Citation 1, Page {citations[0]['page']}]."
-        if citations else "No relevant information found in the knowledge base."
-    )
+    if citations:
+        answer_text = (
+            f"Based on evidence from {citations[0].filename}, the document indicates: "
+            f"\"{citations[0].snippet}\" [Citation 1, Page {citations[0].page}]."
+        )
+    else:
+        answer_text = "Insufficient document context in knowledge base to answer this query."
 
     elapsed_ms = round((time.perf_counter() - start_t) * 1000, 2)
 
@@ -119,43 +127,57 @@ async def query_pipeline(payload: QueryRequest):
         "is_cached": False,
         "similarity_score": 1.0,
         "latency_ms": elapsed_ms,
-        "citations": citations
+        "citations": citations_data,
+        "tenant_id": tenant_id
     }
 
-    # Store in semantic cache
-    semantic_cache.set(payload.query, q_vector, response_data)
+    # Populate cache
+    semantic_cache.set(payload.query, q_vector, response_data, tenant_id=tenant_id)
 
     return QueryResponse(**response_data)
 
 @router.post("/stream")
-async def stream_query(payload: QueryRequest):
+async def stream_query(
+    payload: QueryRequest,
+    tenant_id: str = Depends(verify_auth)
+):
     """
-    Streams response tokens using Server-Sent Events (SSE), immediately emitting citations
-    metadata followed by token stream.
+    Streams response tokens as Server-Sent Events (SSE) with prompt injection defense.
     """
-    retrieved_chunks, _ = retrieval_pipe.search(
+    citations, _ = retrieval_pipe.search(
         query=payload.query,
+        tenant_id=tenant_id,
         top_k=payload.top_k,
         rerank_top_k=payload.rerank_top_k
     )
 
     return StreamingResponse(
-        generator_pipe.stream_generation(payload.query, retrieved_chunks),
+        generator_pipe.stream_generation(payload.query, citations),
         media_type="text/event-stream"
     )
 
 @router.get("/eval/benchmark")
-async def get_benchmarks():
+async def run_evaluations(tenant_id: str = Depends(verify_auth)):
     """
-    Runs quantitative benchmark comparisons: Hit Rate@K, MRR, Faithfulness,
-    and chunking strategy A/B test simulation.
+    Runs automated dataset-driven evaluation benchmark tracking Hit Rate@K, MRR,
+    Faithfulness, and latency percentiles.
     """
-    return eval_harness.benchmark_chunking_strategies(sample_text="Evaluation Corpus")
+    try:
+        summary = eval_harness.run_benchmark()
+        return summary
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Evaluation execution failed: {str(e)}"
+        )
 
 @router.get("/stats")
-async def get_stats():
+async def get_system_stats(tenant_id: str = Depends(verify_auth)):
     return {
-        "catalog": DOC_CATALOG,
-        "cache_entries": len(semantic_cache._cache),
-        "status": "ready"
+        "tenant_id": tenant_id,
+        "indexed_chunks": retrieval_pipe.get_chunk_count(tenant_id=tenant_id),
+        "cached_queries": semantic_cache.count(tenant_id=tenant_id),
+        "embedding_model": settings.EMBEDDING_MODEL_NAME,
+        "reranker_model": settings.RERANKER_MODEL_NAME,
+        "status": "operational"
     }

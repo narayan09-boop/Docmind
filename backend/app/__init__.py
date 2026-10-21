@@ -1,0 +1,1 @@
+# DocMind Backend Application Package

@@ -1,0 +1,47 @@
+{
+  "dataset_name": "DocMind Financial & Technical Benchmark",
+  "version": "1.0.0",
+  "description": "Standardized test suite for evaluating retrieval precision, groundedness, and hallucination resistance.",
+  "examples": [
+    {
+      "id": "eval-001",
+      "query": "What was the total operating revenue expansion for Q3?",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_keywords": ["18.4%", "$4.2B", "operating revenue"],
+      "reference_answer": "Total operating revenue expanded by 18.4% YoY to $4.2B, driven primarily by enterprise cloud subscription growth.",
+      "category": "financial_metric"
+    },
+    {
+      "id": "eval-002",
+      "query": "What gross margin was achieved by Cloud Infrastructure operations?",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_keywords": ["42.0%", "gross margin", "38.5%"],
+      "reference_answer": "Cloud Infrastructure operations delivered a 42.0% gross margin, outperforming the projected consensus benchmark of 38.5%.",
+      "category": "segment_margin"
+    },
+    {
+      "id": "eval-003",
+      "query": "How much cost savings resulted from automated cluster provisioning?",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_keywords": ["$140", "million", "cluster", "orchestration"],
+      "reference_answer": "Automated GPU cluster orchestration and dynamic inference quantization directly contributed to recurring infrastructure cost savings of $140 million.",
+      "category": "operational_efficiency"
+    },
+    {
+      "id": "eval-004",
+      "query": "What is the projected revenue guidance for fiscal year 2027?",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_keywords": ["$18.2B", "$19.0B", "FY27", "guidance"],
+      "reference_answer": "Projected net revenue between $18.2B and $19.0B, representing annualized expansion of 16% to 21%.",
+      "category": "forward_guidance"
+    },
+    {
+      "id": "eval-005",
+      "query": "What is the quantum encryption protocol used in the Mars orbit satellite?",
+      "expected_doc": null,
+      "expected_keywords": [],
+      "reference_answer": "Insufficient document context to verify this query.",
+      "category": "hallucination_resistance_abstention"
+    }
+  ]
+}

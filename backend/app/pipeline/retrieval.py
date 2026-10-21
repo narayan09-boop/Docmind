@@ -1,92 +1,171 @@
+import threading
 import numpy as np
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer, CrossEncoder
 import logging
+
+from app.core.config import settings
+from app.pipeline.models import DocumentChunk, CitationInfo
+from app.pipeline.embeddings import model_registry
 
 logger = logging.getLogger(__name__)
 
 class HybridRetrievalPipeline:
-    def __init__(
-        self,
-        embedding_model: str = "all-MiniLM-L6-v2",
-        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    ):
-        logger.info("Initializing Hybrid Retrieval & Cross-Encoder models...")
-        self.encoder = SentenceTransformer(embedding_model)
-        self.reranker = CrossEncoder(reranker_model)
-        self.chunks: List[Dict[str, Any]] = []
-        self.dense_embeddings: np.ndarray = np.empty((0, 384))
-        self.bm25: BM25Okapi = None
+    """
+    Thread-safe, multi-tenant hybrid retrieval pipeline combining:
+    1. Dense semantic similarity search
+    2. Sparse BM25 keyword matching
+    3. Reciprocal Rank Fusion (RRF)
+    4. Cross-Encoder reranking
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        # Tenant partitioned store: {tenant_id: {"chunks": [...], "embeddings": np.ndarray, "bm25": BM25Okapi}}
+        self._tenant_stores: Dict[str, Dict[str, Any]] = {}
 
-    def index_chunks(self, chunks: List[Dict[str, Any]]):
-        """Builds both dense vector space and sparse BM25 index."""
+    def _get_or_create_store(self, tenant_id: str) -> Dict[str, Any]:
+        if tenant_id not in self._tenant_stores:
+            self._tenant_stores[tenant_id] = {
+                "chunks": [],
+                "embeddings": np.empty((0, model_registry.dimension), dtype=np.float32),
+                "bm25": None
+            }
+        return self._tenant_stores[tenant_id]
+
+    def index_chunks(self, chunks: List[DocumentChunk], tenant_id: str = "default") -> int:
+        """
+        Idempotently indexes document chunks for a specific tenant.
+        Prevents duplicate chunks from skewing BM25 frequency or wasting vector space.
+        """
         if not chunks:
-            return
+            return 0
 
-        self.chunks = chunks
-        corpus_texts = [c["content"] for c in chunks]
+        with self._lock:
+            store = self._get_or_create_store(tenant_id)
+            existing_chunks: List[DocumentChunk] = store["chunks"]
+            existing_ids = {c.chunk_id for c in existing_chunks}
 
-        # 1. Dense Embeddings
-        self.dense_embeddings = self.encoder.encode(corpus_texts, normalize_embeddings=True)
+            # Filter out chunks already indexed
+            new_chunks = [c for c in chunks if c.chunk_id not in existing_ids]
+            if not new_chunks:
+                logger.info(f"All {len(chunks)} chunks already indexed for tenant '{tenant_id}'.")
+                return 0
 
-        # 2. Sparse BM25 Index
-        tokenized_corpus = [doc.lower().split(" ") for doc in corpus_texts]
-        self.bm25 = BM25Okapi(tokenized_corpus)
-        logger.info(f"Indexed {len(chunks)} chunks into Hybrid Vector+BM25 Store.")
+            # Encode new vectors
+            encoder = model_registry.get_encoder()
+            new_texts = [c.content for c in new_chunks]
+            new_vectors = encoder.encode(new_texts, normalize_embeddings=True)
+
+            # Update store
+            updated_chunks = existing_chunks + new_chunks
+            if store["embeddings"].shape[0] == 0:
+                updated_embeddings = new_vectors
+            else:
+                updated_embeddings = np.vstack([store["embeddings"], new_vectors])
+
+            # Rebuild sparse BM25 index for the tenant
+            tokenized_corpus = [c.content.lower().split() for c in updated_chunks]
+            store["chunks"] = updated_chunks
+            store["embeddings"] = updated_embeddings
+            store["bm25"] = BM25Okapi(tokenized_corpus) if tokenized_corpus else None
+
+            logger.info(
+                f"Tenant '{tenant_id}': Indexed {len(new_chunks)} new chunks. "
+                f"Total active chunks: {len(updated_chunks)}."
+            )
+            return len(new_chunks)
 
     def search(
         self, 
         query: str, 
-        top_k: int = 10, 
-        rerank_top_k: int = 3,
-        rrf_k: int = 60
-    ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+        tenant_id: str = "default",
+        top_k: int = 5, 
+        rerank_top_k: int = 3
+    ) -> Tuple[List[CitationInfo], np.ndarray]:
         """
-        Executes:
-        1. Dense semantic search
-        2. Sparse BM25 search
-        3. Reciprocal Rank Fusion (RRF)
-        4. Cross-Encoder reranking
-        Returns reranked chunks with citation coordinates and the query embedding vector.
+        Executes dense + sparse search, merges via RRF, and applies Cross-Encoder reranking.
         """
-        if not self.chunks or self.bm25 is None:
-            return [], np.zeros((384,))
+        with self._lock:
+            store = self._get_or_create_store(tenant_id)
+            chunks: List[DocumentChunk] = store["chunks"]
+            embeddings: np.ndarray = store["embeddings"]
+            bm25 = store["bm25"]
 
-        # Query embedding
-        q_emb = self.encoder.encode([query], normalize_embeddings=True)[0]
+        if not chunks or bm25 is None or embeddings.shape[0] == 0:
+            logger.warning(f"Search aborted: Store for tenant '{tenant_id}' is empty.")
+            return [], np.zeros((model_registry.dimension,), dtype=np.float32)
 
-        # 1. Dense Scoring
-        dense_scores = np.dot(self.dense_embeddings, q_emb)
+        # 1. Encode query
+        encoder = model_registry.get_encoder()
+        q_emb = encoder.encode([query], normalize_embeddings=True)[0]
+
+        # 2. Dense Semantic Search
+        dense_scores = np.dot(embeddings, q_emb)
         dense_rankings = np.argsort(dense_scores)[::-1]
 
-        # 2. Sparse BM25 Scoring
-        tokenized_query = query.lower().split(" ")
-        bm25_scores = self.bm25.get_scores(tokenized_query)
+        # 3. Sparse BM25 Search
+        tokenized_query = query.lower().split()
+        bm25_scores = bm25.get_scores(tokenized_query) if tokenized_query else np.zeros(len(chunks))
         sparse_rankings = np.argsort(bm25_scores)[::-1]
 
-        # 3. Reciprocal Rank Fusion (RRF)
-        rrf_scores = {i: 0.0 for i in range(len(self.chunks))}
-        for rank, doc_idx in enumerate(dense_rankings[:top_k]):
+        # 4. Reciprocal Rank Fusion (RRF)
+        rrf_k = settings.RRF_K
+        rrf_scores = {i: 0.0 for i in range(len(chunks))}
+
+        effective_top = min(top_k * 2, len(chunks))
+        for rank, doc_idx in enumerate(dense_rankings[:effective_top]):
             rrf_scores[doc_idx] += 1.0 / (rrf_k + rank + 1)
-        for rank, doc_idx in enumerate(sparse_rankings[:top_k]):
+        for rank, doc_idx in enumerate(sparse_rankings[:effective_top]):
             rrf_scores[doc_idx] += 1.0 / (rrf_k + rank + 1)
 
-        # Select candidates for reranking
+        # Select top RRF candidates
         sorted_candidates = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
         candidate_indices = [idx for idx, _ in sorted_candidates]
 
-        # 4. Cross-Encoder Reranking
-        pairs = [[query, self.chunks[i]["content"]] for i in candidate_indices]
-        cross_scores = self.reranker.predict(pairs)
+        # 5. Cross-Encoder Reranking
+        reranker = model_registry.get_reranker()
+        scored_candidates = []
 
-        # Pair candidates with cross-encoder scores
-        ranked_results = []
-        for i, score in zip(candidate_indices, cross_scores):
-            chunk_copy = self.chunks[i].copy()
-            chunk_copy["rerank_score"] = float(score)
-            ranked_results.append(chunk_copy)
+        if reranker is not None and candidate_indices:
+            pairs = [[query, chunks[i].content] for i in candidate_indices]
+            try:
+                cross_scores = reranker.predict(pairs)
+                for i, score in zip(candidate_indices, cross_scores):
+                    scored_candidates.append((chunks[i], float(score)))
+                scored_candidates.sort(key=lambda x: x[1], reverse=True)
+            except Exception as e:
+                logger.warning(f"Reranking error ({e}). Falling back to RRF order.")
+                scored_candidates = [(chunks[i], rrf_scores[i]) for i in candidate_indices]
+        else:
+            scored_candidates = [(chunks[i], rrf_scores[i]) for i in candidate_indices]
 
-        # Sort by reranker score descending
-        ranked_results.sort(key=lambda x: x["rerank_score"], reverse=True)
-        return ranked_results[:rerank_top_k], q_emb
+        # 6. Format Citations
+        citations: List[CitationInfo] = []
+        for rank, (chunk, score) in enumerate(scored_candidates[:rerank_top_k]):
+            snippet_text = chunk.content[:200].strip() + ("..." if len(chunk.content) > 200 else "")
+            citations.append(
+                CitationInfo(
+                    citation_id=rank + 1,
+                    filename=chunk.filename,
+                    page=chunk.primary_page,
+                    bboxes=chunk.bboxes,
+                    snippet=snippet_text,
+                    rerank_score=round(float(score), 4)
+                )
+            )
+
+        return citations, q_emb
+
+    def get_chunk_count(self, tenant_id: str = "default") -> int:
+        with self._lock:
+            store = self._tenant_stores.get(tenant_id)
+            return len(store["chunks"]) if store else 0
+
+    def clear(self, tenant_id: Optional[str] = None):
+        with self._lock:
+            if tenant_id:
+                self._tenant_stores.pop(tenant_id, None)
+            else:
+                self._tenant_stores.clear()
+
+retrieval_pipe = HybridRetrievalPipeline()

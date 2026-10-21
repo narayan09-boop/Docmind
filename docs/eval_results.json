@@ -1,0 +1,59 @@
+{
+  "dataset_name": "DocMind Financial & Technical Benchmark",
+  "dataset_version": "1.0.0",
+  "total_examples": 5,
+  "hit_rate_at_3": 1.0,
+  "mrr": 1.0,
+  "precision_at_3": 0.4167,
+  "average_faithfulness": 0.4993,
+  "latency_p50_ms": 332.91,
+  "latency_p95_ms": 6962.38,
+  "timestamp": 1792598880.539392,
+  "example_results": [
+    {
+      "id": "eval-001",
+      "query": "What was the total operating revenue expansion for Q3?",
+      "latency_ms": 8595.81,
+      "retrieved_count": 1,
+      "top_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "faithfulness": 1.0
+    },
+    {
+      "id": "eval-002",
+      "query": "What gross margin was achieved by Cloud Infrastructure operations?",
+      "latency_ms": 332.91,
+      "retrieved_count": 1,
+      "top_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "faithfulness": 0.8412
+    },
+    {
+      "id": "eval-003",
+      "query": "How much cost savings resulted from automated cluster provisioning?",
+      "latency_ms": 428.63,
+      "retrieved_count": 1,
+      "top_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "faithfulness": 0.1444
+    },
+    {
+      "id": "eval-004",
+      "query": "What is the projected revenue guidance for fiscal year 2027?",
+      "latency_ms": 99.49,
+      "retrieved_count": 1,
+      "top_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_doc": "Q3_Financial_Analysis_Report.pdf",
+      "faithfulness": 0.325
+    },
+    {
+      "id": "eval-005",
+      "query": "What is the quantum encryption protocol used in the Mars orbit satellite?",
+      "latency_ms": 84.45,
+      "retrieved_count": 1,
+      "top_doc": "Q3_Financial_Analysis_Report.pdf",
+      "expected_doc": null,
+      "faithfulness": 0.1857
+    }
+  ]
+}
