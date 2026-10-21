@@ -3,21 +3,67 @@
 @tailwind utilities;
 
 :root {
-  --background: #030712;
-  --foreground: #f8fafc;
-}
-
-* {
-  box-sizing: border-box;
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-serif: 'Newsreader', Georgia, serif;
 }
 
 body {
-  color: var(--foreground);
-  background-color: var(--background);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
+  font-family: var(--font-sans);
+  background-color: #030712;
+  color: #f8fafc;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.font-serif {
+  font-family: var(--font-serif);
+}
+
+/* Glassmorphism primitives */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-card {
+  background: rgba(30, 41, 59, 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.glass-header {
+  background: rgba(3, 7, 18, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Subtle Ambient Glow Gradients */
+.glow-mesh {
+  background-image: 
+    radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.06) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(14, 165, 233, 0.04) 0%, transparent 50%);
+}
+
+/* Animated bounding box highlight */
+@keyframes bbox-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.8), 0 0 20px rgba(245, 158, 11, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 1), 0 0 30px rgba(245, 158, 11, 0.55);
+  }
+}
+
+.active-bbox-highlight {
+  animation: bbox-pulse 2s infinite ease-in-out;
 }
 
 /* Custom Scrollbar */
@@ -26,12 +72,12 @@ body {
   height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(15, 23, 42, 0.3);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.6);
+  background: rgba(71, 85, 105, 0.45);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.8);
+  background: rgba(99, 102, 241, 0.7);
 }
