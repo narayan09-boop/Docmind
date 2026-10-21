@@ -3,81 +3,80 @@
 @tailwind utilities;
 
 :root {
-  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
-  --font-serif: 'Newsreader', Georgia, serif;
+  --bg-paper: #F5F0E7;
+  --bg-sand: #EAE2D5;
+  --surface: #FFFDF8;
+  --text-espresso: #382B25;
+  --text-muted: #786A5E;
+  --accent-terracotta: #B86E4B;
+  --accent-sage: #84927A;
+  --border-taupe: #D7CCBD;
+  --status-forest: #3D6E50;
+  --status-ochre: #C28B38;
+  --status-brick: #A94438;
 }
 
 body {
-  font-family: var(--font-sans);
-  background-color: #030712;
-  color: #f8fafc;
+  background-color: var(--bg-paper);
+  color: var(--text-espresso);
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Editorial Serif Headings */
+h1, h2, h3, .font-serif {
+  font-family: 'Newsreader', Georgia, serif;
+}
+
+/* Technical Monospace */
 .font-mono {
-  font-family: var(--font-mono);
+  font-family: 'JetBrains Mono', monospace;
 }
 
-.font-serif {
-  font-family: var(--font-serif);
+/* Pixel Micro-Badge and Micro-Label */
+.font-pixel {
+  font-family: 'Press Start 2P', monospace;
+  letter-spacing: -0.05em;
 }
 
-/* Glassmorphism primitives */
-.glass-panel {
-  background: rgba(15, 23, 42, 0.65);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+/* Warm Paper Surface & Hairline Borders */
+.paper-surface {
+  background-color: var(--surface);
+  border: 1px solid var(--border-taupe);
 }
 
-.glass-card {
-  background: rgba(30, 41, 59, 0.45);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+.paper-panel {
+  background-color: var(--bg-sand);
+  border: 1px solid var(--border-taupe);
 }
 
-.glass-header {
-  background: rgba(3, 7, 18, 0.75);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+/* Subtle retro paper textures and hairpins */
+.hairline-b {
+  border-bottom: 1px solid var(--border-taupe);
 }
 
-/* Subtle Ambient Glow Gradients */
-.glow-mesh {
-  background-image: 
-    radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
-    radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.06) 0%, transparent 40%),
-    radial-gradient(circle at 50% 50%, rgba(14, 165, 233, 0.04) 0%, transparent 50%);
+.hairline-r {
+  border-right: 1px solid var(--border-taupe);
 }
 
-/* Animated bounding box highlight */
-@keyframes bbox-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.8), 0 0 20px rgba(245, 158, 11, 0.35);
-  }
-  50% {
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 1), 0 0 30px rgba(245, 158, 11, 0.55);
-  }
+.hairline-t {
+  border-top: 1px solid var(--border-taupe);
 }
 
-.active-bbox-highlight {
-  animation: bbox-pulse 2s infinite ease-in-out;
-}
-
-/* Custom Scrollbar */
+/* Restrained Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.3);
+  background: #EAE2D5;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.45);
-  border-radius: 9999px;
+  background: #C4B7A5;
+  border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.7);
+  background: #9E8E7C;
 }
